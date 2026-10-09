@@ -1,0 +1,103 @@
+{
+	"name": "pi-ask-user-question",
+	"version": "2.12.1",
+	"description": "Pi extension (fork of @juicesharp/rpiv-ask-user-question). A structured questionnaire the model can put to you when it would otherwise guess — with typed options, custom answers, and an unattended auto-advance timeout.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"rpiv"
+	],
+	"type": "module",
+	"exports": {
+		".": "./index.ts",
+		"./events": "./events.ts"
+	},
+	"license": "MIT",
+	"author": "juicesharp",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/SomeTestZero/pi-ask-user-question.git"
+	},
+	"homepage": "https://github.com/SomeTestZero/pi-ask-user-question#readme",
+	"bugs": {
+		"url": "https://github.com/SomeTestZero/pi-ask-user-question/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"test": "vitest run"
+	},
+	"files": [
+		"ask-user-question.ts",
+		"rpc-fallback.ts",
+		"config.ts",
+		"events.ts",
+		"index.ts",
+		"reconcile.ts",
+		"LICENSE",
+		"locales/",
+		"docs/",
+		"!docs/*.png",
+		"!docs/*.jpg",
+		"!docs/*.svg",
+		"CHANGELOG.md",
+		"README.md",
+		"state/build-questionnaire.ts",
+		"state/external-editor.ts",
+		"state/i18n-bridge.ts",
+		"state/key-router.ts",
+		"state/questionnaire-session.ts",
+		"state/row-intent.ts",
+		"state/selectors/contract.ts",
+		"state/selectors/derivations.ts",
+		"state/selectors/focus.ts",
+		"state/selectors/projections.ts",
+		"state/state-reducer.ts",
+		"state/state.ts",
+		"tool/auto-advance.ts",
+		"tool/format-answer.ts",
+		"tool/normalize-params.ts",
+		"tool/response-envelope.ts",
+		"tool/types.ts",
+		"tool/validate-questionnaire.ts",
+		"view/component-binding.ts",
+		"view/components/inline-input.ts",
+		"view/components/multi-select-view.ts",
+		"view/components/option-list-view.ts",
+		"view/components/preview/markdown-content-cache.ts",
+		"view/components/preview/preview-block-renderer.ts",
+		"view/components/preview/preview-box-renderer.ts",
+		"view/components/preview/preview-layout-decider.ts",
+		"view/components/preview/preview-pane.ts",
+		"view/components/submit-picker.ts",
+		"view/components/tab-bar.ts",
+		"view/components/wrapping-select.ts",
+		"view/dialog-builder.ts",
+		"view/props-adapter.ts",
+		"view/stateful-view.ts",
+		"view/tab-components.ts",
+		"view/tab-content-strategy.ts",
+		"vitest.config.ts"
+	],
+	"pi": {
+		"image": "https://raw.githubusercontent.com/juicesharp/rpiv-mono/main/packages/rpiv-ask-user-question/docs/cover.png",
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@juicesharp/rpiv-i18n": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"peerDependenciesMeta": {
+		"@juicesharp/rpiv-i18n": {
+			"optional": true
+		}
+	},
+	"dependencies": {
+		"@juicesharp/rpiv-config": "^2.12.0"
+	}
+}
