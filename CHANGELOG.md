@@ -5,6 +5,22 @@ All notable changes to `pi-ask-user-question` (fork of `@juicesharp/rpiv-ask-use
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The transcript was unscrollable while the dialog was up.** Pi's fullscreen TUI defers
+  all viewport input to a focused overlay, and the questionnaire consumed none of it — so
+  the mouse wheel and every transcript scroll key were dead while the dialog was visible.
+  The dialog now forwards what it does not use: wheel notches (via a raw terminal
+  listener, reusing pi's own wheel accelerator and `Alt`-wheel multiplier) and the
+  `tui.altScreen.pageUp` / `pageDown` / `halfPageUp` / `halfPageDown` / `lineUp` /
+  `lineDown` / `top` / `bottom` keys scroll the transcript behind the dialog. Text
+  editors keep every keystroke: while a `Type something.` draft or a notes editor is
+  active, viewport keys stay with the editor. While collapsed, the wheel is left to
+  pi's native scrolling; `Ctrl+]` collapse mode is unchanged. No new chrome and no new
+  configuration.
+
 ## [2.12.1] — fork release
 
 ### Added

@@ -200,6 +200,40 @@ function registerCollapseKeyListener(
 	});
 }
 
+/** SGR mouse wheel: `\x1b[<64;x;yM` (up) / `\x1b[<65;x;yM` (down); button bit 6 (64) marks the wheel, bit 3 (8) the Alt modifier. */
+const SGR_WHEEL_RE = /^\x1b\[<(\d+);(\d+);(\d+)[Mm]$/;
+
+/**
+ * Register the raw terminal listener that forwards mouse-wheel notches to the
+ * transcript while the dialog is visible and focused. pi's fullscreen TUI defers
+ * wheel input to a focused overlay (`shouldDeferViewportInputToOverlay`) and the
+ * questionnaire handles no mouse input, so without this forwarder the wheel is dead
+ * over both the dialog and the transcript behind it. While the overlay is hidden
+ * (collapsed) — or another overlay owns focus — the listener declines and the normal
+ * wheel path (native transcript scrolling / that overlay) runs instead.
+ */
+function registerWheelForwarder(
+	ctx: ExtensionContext,
+	sessionRef: SessionRef,
+	overlayHandleRef: OverlayHandleRef,
+): (() => void) | undefined {
+	if (typeof ctx.ui.onTerminalInput !== "function") return undefined;
+	return ctx.ui.onTerminalInput((data) => {
+		const handle = overlayHandleRef.current;
+		const session = sessionRef.current;
+		if (!handle || !session) return undefined;
+		if (handle.isHidden() || !handle.isFocused()) return undefined;
+		const match = SGR_WHEEL_RE.exec(data);
+		if (!match) return undefined;
+		const button = Number.parseInt(match[1]!, 10);
+		if ((button & 64) === 0) return undefined;
+		const directionBits = button & 3;
+		if (directionBits !== 0 && directionBits !== 1) return undefined;
+		const direction = directionBits === 0 ? -1 : 1;
+		return session.scrollTranscriptByWheel(direction, (button & 8) !== 0) ? { consume: true } : undefined;
+	});
+}
+
 /**
  * Build the `ctx.ui.custom` component factory: constructs the session (capturing it in
  * `sessionRef`) and exposes its component. `editInput` keeps its two dynamic imports —
@@ -387,6 +421,10 @@ export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
 			const sessionRef: SessionRef = { current: null };
 			const overlayHandleRef: OverlayHandleRef = { current: undefined };
 			const doneRef: DoneRef = { current: undefined };
+			// Wheel forwarder first: it is unconditional (unlike the collapse listener, which
+			// is skipped when `collapseKey` is `off`) and matches only SGR wheel sequences,
+			// so it can never shadow the collapse key.
+			const removeWheelForwarder = registerWheelForwarder(ctx, sessionRef, overlayHandleRef);
 			const removeOverlayInputListener = registerCollapseKeyListener(ctx, collapseKey, sessionRef, overlayHandleRef);
 			// Hiding the overlay is only reversible through the raw listener above, so
 			// the session may emit `setHidden` only when it was actually registered;
@@ -459,6 +497,7 @@ export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
 				return buildQuestionnaireResponse(result, typed);
 			} finally {
 				removeOverlayInputListener?.();
+				removeWheelForwarder?.();
 				emitAskUserBlockedEvent(pi, false);
 			}
 		},

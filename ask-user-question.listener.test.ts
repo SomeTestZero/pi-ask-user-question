@@ -64,6 +64,27 @@ function makeHandle(over: { isFocused?: () => boolean } = {}): FakeHandle {
 type RawListener = (data: string) => { consume?: boolean } | undefined;
 type SessionComponent = { render(width: number): string[]; handleInput(data: string): void };
 
+interface FakeTui {
+	requestRender: ReturnType<typeof vi.fn>;
+	terminal: { columns: number; rows: number };
+	scrollBy: ReturnType<typeof vi.fn>;
+	scrollToTop: ReturnType<typeof vi.fn>;
+	scrollToBottom: ReturnType<typeof vi.fn>;
+	wheelScroll: { next: ReturnType<typeof vi.fn> };
+}
+
+function makeFakeTui(): FakeTui {
+	return {
+		requestRender: vi.fn(),
+		terminal: { columns: 120, rows: 24 },
+		scrollBy: vi.fn(),
+		scrollToTop: vi.fn(),
+		scrollToBottom: vi.fn(),
+		// pi-tui's WheelScrollAccelerator seam — 1 line per notch keeps assertions exact.
+		wheelScroll: { next: vi.fn(() => 1) },
+	};
+}
+
 function register() {
 	const { pi, captured } = createMockPi();
 	registerAskUserQuestionTool(pi);
@@ -78,36 +99,32 @@ function register() {
 function driveWithListener(handle: FakeHandle, script: (done: (v: unknown) => void) => void) {
 	const notify = vi.fn();
 	const removeListener = vi.fn();
+	// `current` keeps the legacy collapse-listener semantics (the collapse listener is
+	// registered last); `listeners` exposes every registration in order — the wheel
+	// forwarder is registered first.
 	const listenerRef: { current: RawListener | undefined } = { current: undefined };
+	const listeners: RawListener[] = [];
 	const componentRef: { current: SessionComponent | undefined } = { current: undefined };
+	const tui: FakeTui = makeFakeTui();
 	const onTerminalInput = vi.fn((h: RawListener) => {
 		listenerRef.current = h;
+		listeners.push(h);
 		return removeListener;
 	});
 	const custom = vi.fn(
 		(
-			factory: (
-				tui: { requestRender: () => void; terminal: { columns: number; rows: number } },
-				theme: typeof identityTheme,
-				kb: undefined,
-				done: (v: unknown) => void,
-			) => unknown,
+			factory: (tui: FakeTui, theme: typeof identityTheme, kb: undefined, done: (v: unknown) => void) => unknown,
 			options?: { onHandle?: (handle: FakeHandle) => void },
 		) => {
 			return new Promise((resolve) => {
-				componentRef.current = factory(
-					{ requestRender: vi.fn(), terminal: { columns: 120, rows: 24 } },
-					identityTheme,
-					undefined,
-					resolve,
-				) as SessionComponent;
+				componentRef.current = factory(tui, identityTheme, undefined, resolve) as SessionComponent;
 				options?.onHandle?.(handle);
 				script(resolve);
 			});
 		},
 	);
 	const ctx = { hasUI: true, ui: { custom, onTerminalInput, notify } } as never;
-	return { ctx, notify, onTerminalInput, removeListener, listenerRef, componentRef };
+	return { ctx, notify, onTerminalInput, removeListener, listenerRef, listeners, tui, componentRef };
 }
 
 const home = process.env.HOME ?? "";
@@ -143,8 +160,9 @@ describe("ask_user_question — raw terminal collapse listener", () => {
 			done({ answers: [], cancelled: true });
 		});
 		await tool.execute?.("tc", params as never, undefined as never, undefined as never, ctx);
-		// execute's finally must tear the raw listener down once the tool resolves.
-		expect(removeListener).toHaveBeenCalledTimes(1);
+		// execute's finally must tear every raw listener down once the tool resolves —
+		// both the wheel forwarder and the collapse listener.
+		expect(removeListener).toHaveBeenCalledTimes(2);
 	});
 
 	it("toggles once for Kitty keyboard press, repeat, and release events", async () => {
@@ -269,18 +287,87 @@ describe("ask_user_question — raw terminal collapse listener", () => {
 		await tool.execute?.("tc", params as never, undefined as never, undefined as never, ctx);
 	});
 
-	it("does not register a listener when collapseKey is 'off'", async () => {
+	it("does not register a collapse listener when collapseKey is 'off'", async () => {
 		writeCollapseKeyConfig("off");
 		const tool = register();
 		const handle = makeHandle();
-		const { ctx, onTerminalInput, componentRef } = driveWithListener(handle, (done) => {
+		const { ctx, onTerminalInput, listenerRef, componentRef } = driveWithListener(handle, (done) => {
 			// The footer must not advertise a collapse shortcut that cannot fire (#176).
 			const rendered = componentRef.current!.render(120).join("\n");
 			expect(rendered).not.toContain("to collapse");
 			expect(rendered).toContain("Esc to cancel");
+			// The one registered listener is the unconditional wheel forwarder; no
+			// listener may answer the collapse key.
+			expect(listenerRef.current?.(CTRL_RBRACKET)).toBeUndefined();
 			done({ answers: [], cancelled: true });
 		});
 		await tool.execute?.("tc", params as never, undefined as never, undefined as never, ctx);
-		expect(onTerminalInput).not.toHaveBeenCalled();
+		expect(onTerminalInput).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("ask_user_question — raw terminal wheel forwarder", () => {
+	const WHEEL_UP = "\x1b[<64;10;5M";
+	const WHEEL_DOWN = "\x1b[<65;10;5M";
+	const WHEEL_DOWN_ALT = "\x1b[<73;10;5M"; // button 65 | Alt (bit 8)
+	const MOUSE_PRESS = "\x1b[<0;10;5M";
+
+	it("forwards wheel notches to the transcript while the dialog is focused", async () => {
+		const tool = register();
+		const handle = makeHandle();
+		const { ctx, listeners, tui } = driveWithListener(handle, (done) => {
+			expect(listeners).toHaveLength(2); // [wheel forwarder, collapse listener]
+			expect(listeners[0]?.(WHEEL_UP)).toEqual({ consume: true });
+			expect(tui.scrollBy).toHaveBeenLastCalledWith(-1);
+			expect(listeners[0]?.(WHEEL_DOWN)).toEqual({ consume: true });
+			expect(tui.scrollBy).toHaveBeenLastCalledWith(1);
+			done({ answers: [], cancelled: true });
+		});
+		await tool.execute?.("tc", params as never, undefined as never, undefined as never, ctx);
+	});
+
+	it("Alt+wheel uses pi's fast-scroll multiplier", async () => {
+		const tool = register();
+		const handle = makeHandle();
+		const { ctx, listeners, tui } = driveWithListener(handle, (done) => {
+			expect(listeners[0]?.(WHEEL_DOWN_ALT)).toEqual({ consume: true });
+			expect(tui.scrollBy).toHaveBeenLastCalledWith(5);
+			done({ answers: [], cancelled: true });
+		});
+		await tool.execute?.("tc", params as never, undefined as never, undefined as never, ctx);
+	});
+
+	it("declines wheel input while the overlay is hidden (collapsed) — native scrolling owns the wheel then", async () => {
+		const tool = register();
+		const handle = makeHandle();
+		const { ctx, listeners, tui } = driveWithListener(handle, (done) => {
+			handle.setHidden(true);
+			expect(listeners[0]?.(WHEEL_DOWN)).toBeUndefined();
+			expect(tui.scrollBy).not.toHaveBeenCalled();
+			done({ answers: [], cancelled: true });
+		});
+		await tool.execute?.("tc", params as never, undefined as never, undefined as never, ctx);
+	});
+
+	it("declines wheel input when another overlay has focus", async () => {
+		const tool = register();
+		const handle = makeHandle({ isFocused: () => false });
+		const { ctx, listeners, tui } = driveWithListener(handle, (done) => {
+			expect(listeners[0]?.(WHEEL_DOWN)).toBeUndefined();
+			expect(tui.scrollBy).not.toHaveBeenCalled();
+			done({ answers: [], cancelled: true });
+		});
+		await tool.execute?.("tc", params as never, undefined as never, undefined as never, ctx);
+	});
+
+	it("ignores non-wheel mouse sequences", async () => {
+		const tool = register();
+		const handle = makeHandle();
+		const { ctx, listeners, tui } = driveWithListener(handle, (done) => {
+			expect(listeners[0]?.(MOUSE_PRESS)).toBeUndefined();
+			expect(tui.scrollBy).not.toHaveBeenCalled();
+			done({ answers: [], cancelled: true });
+		});
+		await tool.execute?.("tc", params as never, undefined as never, undefined as never, ctx);
 	});
 });

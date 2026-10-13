@@ -70,6 +70,18 @@ nothing but a global note still returns an answered result rather than a decline
 Inside the editor, `Shift+Enter` inserts a newline, while `Esc` and `Enter` close it; other
 keystrokes edit the buffer, so `n` types an `n`. Pasted line breaks are preserved.
 
+## Scrolling the transcript
+
+The dialog never blocks reading the conversation: the mouse wheel and Pi's transcript
+scroll keys pass through to the chat behind it — `PageUp` / `PageDown`, `Home` / `End`,
+and anything bound to `tui.altScreen.pageUp`, `pageDown`, `halfPageUp`, `halfPageDown`,
+`lineUp`, `lineDown`, `top`, `bottom` (with Pi's page math and `Alt`-wheel fast scroll).
+The dialog keeps every key it uses itself; while a `Type something.` draft or a notes
+editor is open, the text editor keeps its keystrokes and only the wheel scrolls the
+transcript. A full-height dialog that clips its own rows still scrolls internally by
+moving focus. If you want the dialog gone entirely, `Ctrl+]` collapse mode (below) is
+the heavier hammer.
+
 ## Collapse mode
 
 `Ctrl+]` gets the dialog out of the way: the overlay is marked hidden in Pi's overlay

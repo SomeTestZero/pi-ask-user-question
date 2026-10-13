@@ -11,6 +11,41 @@ import { type QuestionnaireAction, routeKey } from "./key-router.js";
 import type { QuestionnaireRuntime, QuestionnaireState } from "./state.js";
 import { type ApplyContext, type Effect, reduce } from "./state-reducer.js";
 
+/**
+ * Transcript-scroll keybindings forwarded to pi's viewport while the dialog holds input
+ * focus. pi's fullscreen TUI defers ALL viewport input to a focused overlay
+ * (`shouldDeferViewportInputToOverlay` in `tui-alt-screen.js`) and the questionnaire
+ * consumes none of it, so without this pass-through PageUp/PageDown and friends are
+ * dead while the dialog is up. Page math mirrors the host's own (`PAGE_SCROLL_OVERLAP`).
+ */
+const PAGE_SCROLL_OVERLAP = 4;
+/** pi's fast-scroll multiplier for Alt+wheel (`ALT_WHEEL_SCROLL_MULTIPLIER` in `tui-alt-screen.js`). */
+const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
+
+const VIEWPORT_SCROLL_BINDINGS: ReadonlyArray<{ id: string; lines: (viewportHeight: number) => number }> = [
+	{ id: "tui.altScreen.pageUp", lines: (h) => -Math.max(1, h - PAGE_SCROLL_OVERLAP) },
+	{ id: "tui.altScreen.pageDown", lines: (h) => Math.max(1, h - PAGE_SCROLL_OVERLAP) },
+	{ id: "tui.altScreen.halfPageUp", lines: (h) => -Math.max(1, Math.floor(h / 2)) },
+	{ id: "tui.altScreen.halfPageDown", lines: (h) => Math.max(1, Math.floor(h / 2)) },
+	{ id: "tui.altScreen.lineUp", lines: () => -1 },
+	{ id: "tui.altScreen.lineDown", lines: () => 1 },
+];
+
+/**
+ * The slice of the host TUI the pass-through scrolls. Every member is optional:
+ * regular-mode hosts have no transcript viewport, and pi-tui may change internals.
+ */
+interface HostViewport {
+	scrollBy?: (lines: number) => void;
+	scrollToTop?: () => void;
+	scrollToBottom?: () => void;
+	requestRender?: (force?: boolean) => void;
+	getPrimaryScrollView?: () => { viewportHeight?: number };
+	terminal?: { rows?: number };
+	/** pi-tui's `WheelScrollAccelerator` — reuse it so wheel speed matches scrolling outside the dialog. */
+	wheelScroll?: { next?: (direction: number, now: number) => number };
+}
+
 export interface QuestionnaireSessionConfig {
 	tui: TUI;
 	theme: Theme;
@@ -151,10 +186,75 @@ export class QuestionnaireSession {
 		if (this.inputEditorOpen) return;
 		const action = routeKey(data, this.state, this.runtime());
 		if (action.kind === "ignore") {
+			// While the inline draft editor owns the keyboard every keystroke belongs to it;
+			// otherwise unhandled keys that name a transcript-scroll action pass through to
+			// the viewport (see VIEWPORT_SCROLL_BINDINGS).
+			if (!this.state.inputMode && this.tryViewportScroll(data)) return;
 			this.handleIgnoreInline(data);
 			return;
 		}
 		this.commit(action);
+	}
+
+	/**
+	 * Viewport pass-through for keys the router ignored. pi drops transcript-scroll keys
+	 * while a focused overlay is up and the dialog consumes none of them, so they are
+	 * forwarded here instead. Text editors keep every keystroke — a draft or note in
+	 * progress must never lose its editing keys to the transcript.
+	 */
+	private tryViewportScroll(data: string): boolean {
+		const kb = this.keybindings;
+		if (kb.matches(data, "tui.altScreen.top")) return this.scrollTranscriptTo("top");
+		if (kb.matches(data, "tui.altScreen.bottom")) return this.scrollTranscriptTo("bottom");
+		for (const binding of VIEWPORT_SCROLL_BINDINGS) {
+			if (kb.matches(data, binding.id)) return this.scrollTranscriptBy(binding.lines(this.transcriptViewportHeight()));
+		}
+		return false;
+	}
+
+	/** Scroll the transcript behind the dialog. False when the host has no transcript viewport (regular mode). */
+	scrollTranscriptBy(lines: number): boolean {
+		const host = this.hostViewport();
+		if (!host?.scrollBy) return false;
+		host.scrollBy(lines);
+		host.requestRender?.();
+		return true;
+	}
+
+	/** Jump the transcript behind the dialog to its start or end. */
+	scrollTranscriptTo(edge: "top" | "bottom"): boolean {
+		const host = this.hostViewport();
+		const scroll = edge === "top" ? host?.scrollToTop : host?.scrollToBottom;
+		if (!scroll) return false;
+		scroll.call(host);
+		host?.requestRender?.();
+		return true;
+	}
+
+	/**
+	 * Raw-wheel entry point for the `ctx.ui.onTerminalInput` forwarder in `execute()`:
+	 * mouse input never reaches `handleInput`, and pi's own wheel path drops events
+	 * while a focused overlay is up, so wheel notches route here instead.
+	 */
+	scrollTranscriptByWheel(direction: -1 | 1, alt: boolean): boolean {
+		return this.scrollTranscriptBy(direction * this.wheelLines(direction) * (alt ? ALT_WHEEL_SCROLL_MULTIPLIER : 1));
+	}
+
+	/** Host wheel step: reuse pi's accelerator when present (identical feel outside the dialog), else 3 lines per notch. */
+	private wheelLines(direction: -1 | 1): number {
+		const accelerator = this.hostViewport().wheelScroll;
+		const lines = typeof accelerator?.next === "function" ? accelerator.next(direction, performance.now()) : 3;
+		return Number.isFinite(lines) && lines > 0 ? Math.floor(lines) : 3;
+	}
+
+	private transcriptViewportHeight(): number {
+		const host = this.hostViewport();
+		const height = host?.getPrimaryScrollView?.().viewportHeight ?? (host?.terminal?.rows ?? 24) - 1;
+		return Math.max(1, height);
+	}
+
+	private hostViewport(): HostViewport {
+		return this.tui as unknown as HostViewport;
 	}
 
 	private commit(action: QuestionnaireAction): void {

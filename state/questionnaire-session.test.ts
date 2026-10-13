@@ -14,6 +14,10 @@ const CTRL_G = "\x07";
 const CTRL_U = "\x15";
 const SHIFT_ENTER = "\x1b\r";
 const TAB = "\t";
+const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
+const HOME = "\x1b[H";
+const END = "\x1b[F";
 
 const params: QuestionParams = {
 	questions: [
@@ -60,6 +64,14 @@ const keybindings = {
 				return data === CTRL_U;
 			case "app.editor.external":
 				return data === CTRL_G;
+			case "tui.altScreen.pageUp":
+				return data === PAGE_UP;
+			case "tui.altScreen.pageDown":
+				return data === PAGE_DOWN;
+			case "tui.altScreen.top":
+				return data === HOME;
+			case "tui.altScreen.bottom":
+				return data === END;
 			default:
 				return false;
 		}
@@ -71,13 +83,14 @@ interface SessionTestOptions {
 	itemsByTab?: WrappingSelectItem[][];
 	editInput?: (value: string) => Promise<string | undefined>;
 	keybindings?: typeof keybindings;
+	tui?: TUI;
 }
 
 function makeSession(options: SessionTestOptions = {}) {
 	const sessionParams = options.params ?? params;
 	const done = vi.fn<(result: QuestionnaireResult) => void>();
 	const session = new QuestionnaireSession({
-		tui: { terminal: { columns: 120, rows: 40 }, requestRender: vi.fn() } as unknown as TUI,
+		tui: options.tui ?? ({ terminal: { columns: 120, rows: 40 }, requestRender: vi.fn() } as unknown as TUI),
 		theme: makeTheme() as unknown as Theme,
 		params: sessionParams,
 		itemsByTab: options.itemsByTab ?? itemsFor(sessionParams),
@@ -94,6 +107,71 @@ function focusCustomAnswer(session: QuestionnaireSession): void {
 	session.dispatch(DOWN);
 	session.dispatch(DOWN);
 }
+
+function makeScrollTui() {
+	return {
+		terminal: { columns: 120, rows: 40 },
+		requestRender: vi.fn(),
+		scrollBy: vi.fn(),
+		scrollToTop: vi.fn(),
+		scrollToBottom: vi.fn(),
+	} as unknown as TUI & {
+		scrollBy: ReturnType<typeof vi.fn>;
+		scrollToTop: ReturnType<typeof vi.fn>;
+		scrollToBottom: ReturnType<typeof vi.fn>;
+	};
+}
+
+describe("QuestionnaireSession — transcript viewport pass-through", () => {
+	// pi's fullscreen TUI drops transcript-scroll input while a focused overlay is up,
+	// so the dialog must forward the keys the router ignored (page math: rows-1 viewport
+	// minus PAGE_SCROLL_OVERLAP = 40 - 1 - 4 = 35 lines per page).
+	it("forwards PageUp/PageDown to the transcript behind the dialog", () => {
+		const tui = makeScrollTui();
+		const { session } = makeSession({ tui });
+		session.dispatch(PAGE_UP);
+		expect(tui.scrollBy).toHaveBeenLastCalledWith(-35);
+		session.dispatch(PAGE_DOWN);
+		expect(tui.scrollBy).toHaveBeenLastCalledWith(35);
+	});
+
+	it("forwards Home/End as transcript top/bottom", () => {
+		const tui = makeScrollTui();
+		const { session } = makeSession({ tui });
+		session.dispatch(HOME);
+		expect(tui.scrollToTop).toHaveBeenCalledTimes(1);
+		session.dispatch(END);
+		expect(tui.scrollToBottom).toHaveBeenCalledTimes(1);
+		expect(tui.scrollBy).not.toHaveBeenCalled();
+	});
+
+	it("keeps viewport keys away from the transcript while typing a custom answer", () => {
+		const tui = makeScrollTui();
+		const { session } = makeSession({ tui });
+		focusCustomAnswer(session);
+		session.dispatch(PAGE_UP);
+		session.dispatch(HOME);
+		expect(tui.scrollBy).not.toHaveBeenCalled();
+		expect(tui.scrollToTop).not.toHaveBeenCalled();
+	});
+
+	it("scrolls via the host wheel seam and honours the Alt multiplier", () => {
+		const tui = makeScrollTui();
+		const wheelTui = tui as unknown as { wheelScroll: { next: () => number } };
+		wheelTui.wheelScroll = { next: () => 2 };
+		const { session } = makeSession({ tui });
+		expect(session.scrollTranscriptByWheel(1, false)).toBe(true);
+		expect(tui.scrollBy).toHaveBeenLastCalledWith(2);
+		expect(session.scrollTranscriptByWheel(-1, true)).toBe(true);
+		expect(tui.scrollBy).toHaveBeenLastCalledWith(-10);
+	});
+
+	it("reports failure on hosts without a transcript viewport (regular mode)", () => {
+		const { session } = makeSession();
+		expect(session.scrollTranscriptByWheel(1, false)).toBe(false);
+		expect(session.scrollTranscriptBy(3)).toBe(false);
+	});
+});
 
 describe("QuestionnaireSession — custom-answer drafts", () => {
 	it("preserves a draft while browsing options and restores it on return", () => {
